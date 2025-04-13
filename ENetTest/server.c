@@ -7,6 +7,10 @@
 #include <stdio.h>
 #include <string.h>
 
+enum channels { KEY_CHAN, UPDATE_CHAN, CHAT_CHAN, PING_CHAN };
+
+static const int CHAN_COUNT = 4;
+
 static const char zero_buf[crypto_kx_SESSIONKEYBYTES] = {0};
 
 typedef struct Keys {
@@ -18,28 +22,6 @@ typedef struct Keys {
 	uint8_t server_rx[crypto_kx_SESSIONKEYBYTES];
 	uint8_t server_tx[crypto_kx_SESSIONKEYBYTES];
 } Keys;
-
-void display_hex(uint8_t *str, int len)
-{
-	for (int i = 0; i < len; i++) {
-		printf("%X", str[i]);
-	}
-	printf("\n");
-}
-
-void display_keys(Keys *keys)
-{
-	printf("server_pk:\t");
-	display_hex(keys->server_pk, crypto_kx_PUBLICKEYBYTES);
-	printf("server_sk:\t");
-	display_hex(keys->server_pk, crypto_kx_SECRETKEYBYTES);
-	printf("client_pk:\t");
-	display_hex(keys->client_pk, crypto_kx_PUBLICKEYBYTES);
-	printf("server_rx:\t");
-	display_hex(keys->server_rx, crypto_kx_SESSIONKEYBYTES);
-	printf("server_tx:\t");
-	display_hex(keys->server_tx, crypto_kx_SESSIONKEYBYTES);
-}
 
 void handle_connect(ENetEvent *event)
 {
@@ -59,7 +41,7 @@ void send_pubkey(Keys *keys, ENetPeer *peer)
 	ENetPacket *packet =
 	    enet_packet_create(keys->server_pk, crypto_kx_PUBLICKEYBYTES,
 			       ENET_PACKET_FLAG_RELIABLE);
-	enet_peer_send(peer, 0, packet);
+	enet_peer_send(peer, KEY_CHAN, packet);
 }
 
 int decrypt_message(ENetPacket *pack, Keys *keys, void *dataout)
@@ -74,7 +56,7 @@ int decrypt_message(ENetPacket *pack, Keys *keys, void *dataout)
 	    nonce, keys->server_rx);
 }
 
-void handle_recieve(ENetEvent *event, Keys *keys)
+void handle_receive(ENetEvent *event, Keys *keys)
 {
 	printf("A packet of length %lu was received from %s on channel %u.\n",
 	       event->packet->dataLength, (char *)event->peer->data,
@@ -93,7 +75,6 @@ void handle_recieve(ENetEvent *event, Keys *keys)
 			printf(
 			    "Key exchange failed, wrong client public key\n");
 		}
-		display_keys(keys);
 	}
 	else if (event->packet->dataLength >
 		 crypto_secretbox_NONCEBYTES + crypto_secretbox_MACBYTES) {
@@ -115,13 +96,6 @@ void handle_recieve(ENetEvent *event, Keys *keys)
 			   crypto_secretbox_NONCEBYTES -
 			   crypto_secretbox_MACBYTES + 1;
 
-		printf("Nonce:\t");
-		display_hex(event->packet->data, crypto_secretbox_NONCEBYTES);
-		printf("Crypt:\t");
-		display_hex(&event->packet->data[crypto_secretbox_NONCEBYTES],
-			    event->packet->dataLength -
-				crypto_secretbox_NONCEBYTES);
-
 		char *decrypted = calloc(mlen, sizeof(char));
 		int n = crypto_secretbox_open_easy(
 		    (uint8_t *)decrypted,
@@ -139,11 +113,6 @@ void handle_recieve(ENetEvent *event, Keys *keys)
 	// Clean up the packet now that we're done using
 	// it.
 	enet_packet_destroy(event->packet);
-	// char msg[] = "Recieved";
-	// ENetPacket *packet =
-	//     enet_packet_create(msg, sizeof(msg) + 1,
-	//     ENET_PACKET_FLAG_RELIABLE);
-	// enet_peer_send(event->peer, 0, packet);
 }
 
 void handle_event(ENetHost *server, Keys *keys)
@@ -157,7 +126,7 @@ void handle_event(ENetHost *server, Keys *keys)
 			break;
 
 		case ENET_EVENT_TYPE_RECEIVE:
-			handle_recieve(&event, keys);
+			handle_receive(&event, keys);
 			break;
 
 		case ENET_EVENT_TYPE_DISCONNECT:
@@ -183,7 +152,7 @@ int main(int argc, char *argv[])
 	}
 	atexit(enet_deinitialize);
 
-	Keys keys;
+	Keys keys = {0};
 	crypto_kx_keypair(keys.server_pk, keys.server_sk);
 
 	ENetAddress address;
@@ -199,7 +168,7 @@ int main(int argc, char *argv[])
 	server = enet_host_create(
 	    &address /* the address to bind the server host to */,
 	    32 /* allow up to 32 clients and/or outgoing connections */,
-	    1 /* allow up to 1 channel to be used, 0. */,
+	    CHAN_COUNT /* allow up to 4 channels to be used. */,
 	    0 /* assume any amount of incoming bandwidth */,
 	    0 /* assume any amount of outgoing bandwidth */);
 
