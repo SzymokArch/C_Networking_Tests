@@ -56,59 +56,66 @@ int decrypt_message(ENetPacket *pack, Keys *keys, void *dataout)
 	    nonce, keys->server_rx);
 }
 
-void handle_receive(ENetEvent *event, Keys *keys)
+void handle_key_channel(ENetEvent *event, Keys *keys)
 {
-	printf("A packet of length %lu was received from %s on channel %u.\n",
-	       event->packet->dataLength, (char *)event->peer->data,
-	       event->channelID);
-
-	if (event->packet->dataLength == crypto_kx_PUBLICKEYBYTES) {
-		printf("Key exchange\n");
-		memcpy(keys->client_pk, event->packet->data,
-		       crypto_kx_PUBLICKEYBYTES);
-		send_pubkey(keys, event->peer);
-
-		if (crypto_kx_server_session_keys(
-			keys->server_rx, keys->server_tx, keys->server_pk,
-			keys->server_sk, keys->client_pk) != 0) {
-
-			printf(
-			    "Key exchange failed, wrong client public key\n");
-		}
+	printf("Key exchange\n");
+	if (event->packet->dataLength != crypto_kx_PUBLICKEYBYTES) {
+		perror("Suspicious client public key (wrong size), bail out");
+		exit(EXIT_FAILURE);
 	}
-	else if (event->packet->dataLength >
-		 crypto_secretbox_NONCEBYTES + crypto_secretbox_MACBYTES) {
+	memcpy(keys->client_pk, event->packet->data, crypto_kx_PUBLICKEYBYTES);
+	send_pubkey(keys, event->peer);
 
-		printf("Encrypted message\n");
+	if (crypto_kx_server_session_keys(keys->server_rx, keys->server_tx,
+					  keys->server_pk, keys->server_sk,
+					  keys->client_pk) != 0) {
 
-		bool rx_zero = !memcmp(keys->server_rx, zero_buf,
-				       crypto_kx_SESSIONKEYBYTES);
-		bool tx_zero = !memcmp(keys->server_tx, zero_buf,
-				       crypto_kx_SESSIONKEYBYTES);
+		printf("Key exchange failed, wrong server public key\n");
+	}
+}
 
-		if (rx_zero || tx_zero) {
-			printf("Keys weren't exchanged yet!\n");
-			enet_packet_destroy(event->packet);
-			return;
-		}
+void handle_chat_channel(ENetEvent *event, Keys *keys)
+{
+	bool rx_zero =
+	    !memcmp(keys->server_rx, zero_buf, crypto_kx_SESSIONKEYBYTES);
+	bool tx_zero =
+	    !memcmp(keys->server_tx, zero_buf, crypto_kx_SESSIONKEYBYTES);
 
-		int mlen = event->packet->dataLength -
-			   crypto_secretbox_NONCEBYTES -
-			   crypto_secretbox_MACBYTES + 1;
+	if (rx_zero || tx_zero) {
+		printf("Keys weren't exchanged yet!\n");
+		return;
+	}
+
+	int mlen = event->packet->dataLength - crypto_secretbox_NONCEBYTES -
+		   crypto_secretbox_MACBYTES + 1;
+
+	if (event->channelID == CHAT_CHAN || event->channelID == PING_CHAN) {
 
 		char *decrypted = calloc(mlen, sizeof(char));
-		int n = crypto_secretbox_open_easy(
-		    (uint8_t *)decrypted,
-		    &event->packet->data[crypto_secretbox_NONCEBYTES],
-		    event->packet->dataLength - crypto_secretbox_NONCEBYTES,
-		    event->packet->data, keys->server_rx);
 		if (decrypt_message(event->packet, keys, decrypted) != 0) {
 			printf("Decryption failed\n");
 		}
 		else {
-			printf("Decrypted message: %s\n", decrypted);
+			printf("Received message: %s\n", decrypted);
 		}
 		free(decrypted);
+	}
+}
+
+void handle_receive(ENetEvent *event, Keys *keys)
+{
+	switch (event->channelID) {
+
+	case KEY_CHAN:
+		handle_key_channel(event, keys);
+		break;
+	case UPDATE_CHAN:
+		break;
+	case CHAT_CHAN:
+		handle_chat_channel(event, keys);
+		break;
+	case PING_CHAN:
+		break;
 	}
 	// Clean up the packet now that we're done using
 	// it.

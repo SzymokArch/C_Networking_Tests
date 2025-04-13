@@ -1,4 +1,5 @@
 #include <enet/enet.h>
+#include <poll.h>
 #include <sodium.h>
 #include <sodium/crypto_secretbox.h>
 #include <stdbool.h>
@@ -51,7 +52,7 @@ void handle_disconnect(ENetHost *client)
 			enet_packet_destroy(event.packet);
 			break;
 		case ENET_EVENT_TYPE_DISCONNECT:
-			printf("Disconnection succeeded.");
+			printf("Disconnection succeeded\n");
 			break;
 		default:
 			break;
@@ -123,6 +124,38 @@ void handle_event(ENetHost *client, Keys *keys)
 	}
 }
 
+int handle_input(char *input)
+{
+	struct pollfd fds;
+	fds.fd = STDIN_FILENO;
+	fds.events = POLLIN;
+
+	int ret = poll(&fds, 1, 10);
+
+	if (ret > 0 && (fds.revents & POLLIN)) {
+		if (fgets(input, 1024, stdin)) {
+			input[strcspn(input, "\n")] = 0;
+			return strlen(input);
+		}
+	}
+	return 0;
+}
+
+void send_chat_message(char *message, Keys *keys, ENetPeer *peer)
+{
+	uint8_t encrypted[1024];
+	randombytes_buf(encrypted, crypto_secretbox_NONCEBYTES);
+	int encrypted_size = strlen(message) + crypto_secretbox_NONCEBYTES +
+			     crypto_secretbox_MACBYTES;
+	crypto_secretbox_easy(&encrypted[crypto_secretbox_NONCEBYTES],
+			      (uint8_t *)message, strlen(message), encrypted,
+			      keys->client_tx);
+
+	ENetPacket *packet = enet_packet_create(encrypted, encrypted_size,
+						ENET_PACKET_FLAG_RELIABLE);
+	enet_peer_send(peer, CHAT_CHAN, packet);
+}
+
 int main(int argc, char *argv[])
 {
 	if (sodium_init() < 0) {
@@ -160,6 +193,10 @@ int main(int argc, char *argv[])
 	while (strcmp(msg, "exit") != 0) {
 		handle_event(client, &keys);
 		send_ping(&keys, peer);
+		if (handle_input(msg)) {
+			printf("Message sent\n");
+			send_chat_message(msg, &keys, peer);
+		}
 	}
 	enet_peer_disconnect(peer, 0);
 
